@@ -169,7 +169,7 @@ impl Machine {
                 Type::Code => 4,
                 Type::I32 => 4,
                 Type::Object => {
-                    let cap = self.load_u32(p + 4);
+                    let cap = self.load_u32(p + 4 + 0);
                     OBJ_HEADER_SIZE + cap
                 },
             };
