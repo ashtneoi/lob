@@ -192,7 +192,7 @@ impl Machine {
                                 return Err(InsnException::NotTopFrame);
                             }
                             let new_tos = self.tos + OBJ_HEADER_SIZE + xv;
-                            let new_tos = (new_tos + 1) & !0x3;
+                            let new_tos = (new_tos + 3) & !0x3;
                             self.mem.resize(new_tos as usize, 0);
                             self.store_u32(self.tos, xv); // cap
                             self.store_u32(self.tos + 8, self.fp.0); // base
