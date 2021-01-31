@@ -133,11 +133,14 @@ impl Machine {
         while fp != 0 {
             let prev = self.load_u32(fp + 12);
             println!("#{}:", friendly_hex_u32(fp));
-            println!("  cap  = #{}", friendly_hex_u32(self.load_u32(fp)));
+            println!("  cap  = #{}", friendly_hex_u32(self.load_u32(fp + 0)));
             println!("  size = #{}", friendly_hex_u32(self.load_u32(fp + 4)));
             println!("  base = #{}", friendly_hex_u32(self.load_u32(fp + 8)));
             println!("  prev = #{}", friendly_hex_u32(prev));
             println!("  ret  = #{}", friendly_hex_u32(self.load_u32(fp + 16)));
+            if fp == prev {
+                unreachable!("infinite `prev` loop");
+            }
             fp = prev;
         }
     }
