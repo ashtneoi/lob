@@ -218,12 +218,32 @@ impl Machine {
                             self.fp = ObjPtr(new_fp);
                         } else {
                             // Push new named object.
-                            unimplemented!();
+                            let size_delta = 4 + OBJ_HEADER_SIZE + xv;
+                            let size = self.load_u32(self.fp.0 + 4);
+                            let new_obj =
+                                self.fp.0 + OBJ_HEADER_SIZE + size + 4;
+                            let new_size = size + size_delta;
+                            let new_cap = max(cap, new_size);
+                            let new_tos = self.fp.0 + OBJ_HEADER_SIZE + new_cap;
+                            self.mem.resize(new_tos as usize, 0);
+
+                            self.store_u32(new_obj - 4, item_header_to_u32(
+                                Type::Object, id));
+                            self.store_u32(new_obj + 0, xv); // cap
+                            self.store_u32(new_obj + 8, self.fp.0); // base
+                            self.store_u32(new_obj + 12, self.fp.0); // prev
+
+                            self.store_u32(self.fp.0 + 0, new_cap);
+                            self.store_u32(self.fp.0 + 4, new_size);
+
+                            self.fp = ObjPtr(new_obj);
                         }
                     },
-                    XData::Object(_xv) => {
+                    XData::Object(xid) => {
                         if id == ItemId(0) {
                             // Push existing object.
+                            let xid = ItemId(xid);
+                            let _ = self.find_in_frame(self.fp, xid);
                             unimplemented!();
                         } else {
                             return Err(InsnException::WrongType);
