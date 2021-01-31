@@ -85,10 +85,22 @@ pub fn item_header_from_u32(h: u32) -> (Type, ItemId) {
     }, ItemId(id))
 }
 
+pub fn item_header_to_u32(ty: Type, id: ItemId) -> u32 {
+    use Type::*;
+    let ty = match ty {
+        BuiltinCode => 0,
+        Code => 1,
+        I32 => 2,
+        Object => 3,
+    };
+    (ty<<29) | id.0
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum InsnException {
     Invalid,
     WrongType,
+    UnalignedCap,
     NotTopFrame,
 }
 
@@ -100,7 +112,6 @@ pub struct Machine {
     pub x: XData,
     pub pc: u32,
     pub fp: ObjPtr,
-    pub tos: u32,
     pub mem: Vec<u8>,
 }
 
@@ -112,9 +123,7 @@ impl Machine {
         }
         let fp = ObjPtr(mem.len() as u32);
         mem.resize(mem.len() + OBJ_HEADER_SIZE as usize, 0);
-        let tos = mem.len() as u32;
-
-        Self { x: XData::I32(0), pc: 0, fp, tos, mem }
+        Self { x: XData::I32(0), pc: 0, fp, mem }
     }
 
     // TODO: This should be write_stack() and should write to a fmt::Write.
@@ -185,20 +194,26 @@ impl Machine {
                 let id = ItemId(id);
                 match self.x {
                     XData::I32(xv) => {
+                        let cap = self.load_u32(self.fp.0);
+                        if self.fp.0 + OBJ_HEADER_SIZE + cap
+                                != self.mem.len() as u32 {
+                            return Err(InsnException::NotTopFrame);
+                        }
+                        if xv & 0x3 != 0 {
+                            return Err(InsnException::UnalignedCap);
+                        }
+
                         if id == ItemId(0) {
                             // Push new frame.
-                            let cap = self.load_u32(self.fp.0);
-                            if self.tos != self.fp.0 + OBJ_HEADER_SIZE + cap {
-                                return Err(InsnException::NotTopFrame);
-                            }
-                            let new_tos = self.tos + OBJ_HEADER_SIZE + xv;
-                            let new_tos = (new_tos + 3) & !0x3;
-                            self.mem.resize(new_tos as usize, 0);
-                            self.store_u32(self.tos, xv); // cap
-                            self.store_u32(self.tos + 8, self.fp.0); // base
-                            self.store_u32(self.tos + 12, self.fp.0); // prev
-                            self.fp = ObjPtr(self.tos);
-                            self.tos = new_tos;
+                            let delta = OBJ_HEADER_SIZE + xv;
+                            let new_fp = self.fp.0 + delta;
+                            self.mem.resize(self.mem.len() + delta as usize, 0);
+
+                            self.store_u32(new_fp + 0, xv); // cap
+                            self.store_u32(new_fp + 8, self.fp.0); // base
+                            self.store_u32(new_fp + 12, self.fp.0); // prev
+
+                            self.fp = ObjPtr(new_fp);
                         } else {
                             // Push new named object.
                             unimplemented!();
