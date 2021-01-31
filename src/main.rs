@@ -1,3 +1,4 @@
+use core::cmp::max;
 use core::convert::TryInto;
 
 const OBJ_HEADER_SIZE: u32 = 20;
@@ -178,8 +179,6 @@ impl Machine {
         let insn_u32 = self.load_u32(self.pc);
         let insn = Insn::from_u32(insn_u32);
 
-        self.pc += 4;
-
         match insn {
             Insn::Def(id) => {
                 assert_eq!(id & 0xE000_0000, 0);
@@ -229,6 +228,8 @@ impl Machine {
                     },
                     _ => return Err(InsnException::WrongType),
                 }
+
+                self.pc += 4;
             },
             _ => unimplemented!(),
         }
@@ -241,12 +242,19 @@ fn main() {
     // TODO: CLI option to run built-in program that compiles input into
     // bytecode.
 
-    let mut m = Machine::new(&[
-        Insn::Push(0).as_u32(),
-    ]);
-    m.print_stack();
-    m.step().unwrap();
-    m.print_stack();
-    m.step().unwrap();
+    let prog: Vec<_> = [
+        Insn::Push(0),
+        Insn::Push(1),
+    ].iter().map(|i| i.as_u32()).collect();
+
+    let mut m = Machine::new(&prog);
+    loop {
+        m.print_stack();
+        println!();
+        if let Err(e) = m.step() {
+            eprintln!("exception: {:?} at #{}", e, friendly_hex_u32(m.pc));
+            break;
+        }
+    }
     m.print_stack();
 }
