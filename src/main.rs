@@ -49,7 +49,7 @@ impl Insn {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct DataPtr(u32);
+pub struct ItemPtr(u32);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ItemId(u32);
@@ -62,7 +62,7 @@ pub enum XData {
     BuiltinCode(u32), // index (0 is reserved for future extensions)
     Code(u32), // pointer
     I32(u32),
-    Object(u32), // pointer
+    Object(ObjPtr),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -103,6 +103,7 @@ pub enum InsnException {
     WrongType,
     UnalignedCap,
     NotTopFrame,
+    ItemNotFound,
 }
 
 fn friendly_hex_u32(x: u32) -> String {
@@ -113,6 +114,7 @@ pub struct Machine {
     pub x: XData,
     pub pc: u32,
     pub fp: ObjPtr,
+    pub gp: ObjPtr,
     pub mem: Vec<u8>,
 }
 
@@ -124,7 +126,7 @@ impl Machine {
         }
         let fp = ObjPtr(mem.len() as u32);
         mem.resize(mem.len() + OBJ_HEADER_SIZE as usize, 0);
-        Self { x: XData::I32(0), pc: 0, fp, mem }
+        Self { x: XData::I32(0), pc: 0, fp, gp: fp, mem }
     }
 
     // TODO: This should be write_stack() and should write to a fmt::Write.
@@ -155,14 +157,14 @@ impl Machine {
             &val.to_le_bytes());
     }
 
-    pub fn find_in_frame(&self, fp: ObjPtr, id: ItemId) -> Option<DataPtr> {
-        let size = self.load_u32(fp.0);
+    pub fn find_in_frame(&self, fp: ObjPtr, id: ItemId) -> Option<ItemPtr> {
+        let size = self.load_u32(fp.0 + 4);
         let mut p = fp.0 + OBJ_HEADER_SIZE;
 
         while p < fp.0 + size {
             let (ty, id2) = item_header_from_u32(self.load_u32(p));
             if id2 == id {
-                return Some(DataPtr(p + 4));
+                return Some(ItemPtr(p));
             }
             p += 4 + match ty {
                 Type::BuiltinCode => 4,
@@ -174,7 +176,22 @@ impl Machine {
                 },
             };
         }
-        assert_eq!(p, fp.0 + size);
+        assert_eq!(p, fp.0 + OBJ_HEADER_SIZE + size);
+        None
+    }
+
+    pub fn find(&self, id: ItemId) -> Option<ItemPtr> {
+        let mut fp = self.fp.0;
+        while fp != 0 {
+            let prev = self.load_u32(fp + 12);
+            if let Some(item) = self.find_in_frame(self.fp, id) {
+                return Some(item);
+            }
+            if fp == prev {
+                unreachable!("infinite `prev` loop");
+            }
+            fp = prev;
+        }
         None
     }
 
@@ -239,17 +256,41 @@ impl Machine {
                             self.fp = ObjPtr(new_obj);
                         }
                     },
-                    XData::Object(xid) => {
+                    XData::Object(ObjPtr(_p)) => {
                         if id == ItemId(0) {
                             // Push existing object.
-                            let xid = ItemId(xid);
-                            let _ = self.find_in_frame(self.fp, xid);
                             unimplemented!();
                         } else {
                             return Err(InsnException::WrongType);
                         }
                     },
                     _ => return Err(InsnException::WrongType),
+                }
+
+                self.pc += 4;
+            },
+            Insn::Val(id) => {
+                assert_eq!(id & 0xE000_0000, 0);
+                let id = ItemId(id);
+
+                if id == ItemId(0) {
+                    self.x = XData::Object(ObjPtr(self.gp.0));
+                } else {
+                    if let Some(ItemPtr(item)) = self.find(id) {
+                        let (ty, _) = item_header_from_u32(self.load_u32(item));
+                        self.x = match ty {
+                            Type::BuiltinCode =>
+                                XData::BuiltinCode(self.load_u32(item + 4)),
+                            Type::Code =>
+                                XData::Code(self.load_u32(item + 4)),
+                            Type::I32 =>
+                                XData::I32(self.load_u32(item + 4)),
+                            Type::Object =>
+                                XData::Object(ObjPtr(item + 4)),
+                        }
+                    } else {
+                        return Err(InsnException::ItemNotFound);
+                    }
                 }
 
                 self.pc += 4;
@@ -268,6 +309,8 @@ fn main() {
     let prog: Vec<_> = [
         Insn::Push(0),
         Insn::Push(1),
+        Insn::Val(0),
+        Insn::Def(0),
     ].iter().map(|i| i.as_u32()).collect();
 
     let mut m = Machine::new(&prog);
