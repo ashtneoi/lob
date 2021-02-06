@@ -4,15 +4,48 @@ use core::convert::TryInto;
 const OBJ_HEADER_SIZE: u32 = 20;
 
 #[derive(Clone, Copy, Debug)]
+pub enum Intrinsic {
+    Call,
+    Pop,
+    Alloc,
+    Unknown(u32),
+}
+
+impl Intrinsic {
+    fn from_u32(n: u32) -> Intrinsic {
+        use Intrinsic::*;
+        match n {
+            0 => Call,
+            1 => Pop,
+            2 => Alloc,
+            _ => Unknown(3),
+        }
+    }
+
+    fn as_u32(&self) -> u32 {
+        use Intrinsic::*;
+        match *self {
+            Call => 0,
+            Pop => 1,
+            Alloc => 2,
+            Unknown(n) => {
+                assert!(n > 2);
+                n
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum Insn {
     Def(u32),
     Set(u32),
     Push(u32),
-    Pop,
-    Call,
+    Intr(Intrinsic),
     Jump(u32),
-    Imm(u32),
     Val(u32),
+    Xsl(u32),
+    Xoh(u32),
 }
 
 impl Insn {
@@ -24,26 +57,46 @@ impl Insn {
             0 => Def(n),
             1 => Set(n),
             2 => Push(n),
-            3 => Pop,
-            4 => Call,
-            5 => Jump(n),
-            6 => Imm(n),
-            7 => Val(n),
+            3 => Intr(Intrinsic::from_u32(n)),
+            4 => Jump(n),
+            5 => Val(n),
+            6 => Xsl(n),
+            7 => Xoh(n),
             _ => unreachable!(),
         }
     }
 
     pub fn as_u32(&self) -> u32 {
+        self.validate().unwrap();
         use Insn::*;
-        match self {
-            &Def(n) => (0<<29) | n,
-            &Set(n) => (1<<29) | n,
-            &Push(n) => (2<<29) | n,
-            &Pop => 3<<29,
-            &Call => 4<<29,
-            &Jump(n) => (5<<29) | n,
-            &Imm(n) => (6<<29) | n,
-            &Val(n) => (7<<29) | n,
+        match *self {
+            Def(n) => (0<<29) | n,
+            Set(n) => (1<<29) | n,
+            Push(n) => (2<<29) | n,
+            Intr(i) => (3<<29) | i.as_u32(),
+            Jump(n) => (4<<29) | n,
+            Val(n) => (5<<29) | n,
+            Xsl(n) => (6<<29) | n,
+            Xoh(n) => (7<<29) | n,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        use Insn::*;
+        let imm = match *self {
+            Def(n) => n,
+            Set(n) => n,
+            Push(n) => n,
+            Intr(i) => i.as_u32(),
+            Jump(n) => n,
+            Val(n) => n,
+            Xsl(n) => n,
+            Xoh(n) => n,
+        };
+        if imm & 0xE000_0000 == 0 {
+            Ok(())
+        } else {
+            Err("immediate doesn't fit in bits 29..0")
         }
     }
 }
@@ -104,6 +157,7 @@ pub enum InsnException {
     UnalignedCap,
     NotTopFrame,
     ItemNotFound,
+    ItemExistsInFrame,
 }
 
 fn friendly_hex_u32(x: u32) -> String {
@@ -120,7 +174,7 @@ pub struct Machine {
 
 impl Machine {
     pub fn new(code: &[u32]) -> Self {
-        let mut mem = Vec::with_capacity(0x10_0000);
+        let mut mem = Vec::with_capacity(4*code.len() + 0x100);
         for chunk in code.iter().map(|&i| i.to_le_bytes()) {
             mem.extend_from_slice(&chunk);
         }
@@ -195,7 +249,55 @@ impl Machine {
         None
     }
 
-    pub fn step(&mut self) -> Result<(), InsnException> {
+    fn tos(&self) -> u32 {
+        self.mem.len() as u32
+    }
+
+    fn cap(&self) -> u32 {
+        self.load_u32(self.fp.0 + 0)
+    }
+
+    fn size(&self) -> u32 {
+        self.load_u32(self.fp.0 + 4)
+    }
+
+    fn base(&self) -> ObjPtr {
+        ObjPtr(self.load_u32(self.fp.0 + 8))
+    }
+
+    fn prev(&self) -> ObjPtr {
+        ObjPtr(self.load_u32(self.fp.0 + 12))
+    }
+
+    fn ret(&self) -> u32 {
+        self.load_u32(self.fp.0 + 16)
+    }
+
+    fn set_tos(&mut self, val: u32) {
+        self.mem.resize(val as usize, 0);
+    }
+
+    fn set_cap(&mut self, val: u32) {
+        self.store_u32(self.fp.0 + 0, val);
+    }
+
+    fn set_size(&mut self, val: u32) {
+        self.store_u32(self.fp.0 + 4, val);
+    }
+
+    fn set_base(&mut self, val: ObjPtr) {
+        self.store_u32(self.fp.0 + 8, val.0);
+    }
+
+    fn set_prev(&mut self, val: ObjPtr) {
+        self.store_u32(self.fp.0 + 12, val.0);
+    }
+
+    fn set_ret(&mut self, val: u32) {
+        self.store_u32(self.fp.0 + 16, val);
+    }
+
+    pub fn step(&mut self) -> Result<Option<XData>, InsnException> {
         let insn_u32 = self.load_u32(self.pc);
         let insn = Insn::from_u32(insn_u32);
 
@@ -204,8 +306,12 @@ impl Machine {
                 assert_eq!(id & 0xE000_0000, 0);
                 let id = ItemId(id);
                 if id == ItemId(0) {
-                    return Err(InsnException::Invalid);
+                    return Ok(Some(self.x));
                 }
+                if self.find_in_frame(self.fp, id).is_some() {
+                    return Err(InsnException::ItemExistsInFrame);
+                }
+
                 unimplemented!();
             },
             Insn::Push(id) => {
@@ -213,9 +319,9 @@ impl Machine {
                 let id = ItemId(id);
                 match self.x {
                     XData::I32(xv) => {
-                        let cap = self.load_u32(self.fp.0);
-                        if self.fp.0 + OBJ_HEADER_SIZE + cap
-                                != self.mem.len() as u32 {
+                        let cap = self.cap();
+                        let tos = self.tos();
+                        if self.fp.0 + OBJ_HEADER_SIZE + cap != tos {
                             return Err(InsnException::NotTopFrame);
                         }
                         if xv & 0x3 != 0 {
@@ -224,19 +330,20 @@ impl Machine {
 
                         if id == ItemId(0) {
                             // Push new frame.
-                            let delta = OBJ_HEADER_SIZE + xv;
-                            let new_fp = self.fp.0 + delta;
-                            self.mem.resize(self.mem.len() + delta as usize, 0);
+                            let mem_delta = OBJ_HEADER_SIZE + xv;
+                            let new_fp = ObjPtr(self.fp.0 + mem_delta);
+                            self.mem.resize((tos + mem_delta) as usize, 0);
 
-                            self.store_u32(new_fp + 0, xv); // cap
-                            self.store_u32(new_fp + 8, self.fp.0); // base
-                            self.store_u32(new_fp + 12, self.fp.0); // prev
+                            let new_prev = self.fp;
+                            self.fp = new_fp;
 
-                            self.fp = ObjPtr(new_fp);
+                            self.set_cap(xv);
+                            self.set_base(new_prev);
+                            self.set_prev(new_prev);
                         } else {
                             // Push new named object.
                             let size_delta = 4 + OBJ_HEADER_SIZE + xv;
-                            let size = self.load_u32(self.fp.0 + 4);
+                            let size = self.size();
                             let new_obj =
                                 self.fp.0 + OBJ_HEADER_SIZE + size + 4;
                             let new_size = size + size_delta;
@@ -295,10 +402,26 @@ impl Machine {
 
                 self.pc += 4;
             },
+            Insn::Xsl(n) => {
+                assert_eq!(n & 0xE000_0000, 0);
+                self.x = XData::I32(n);
+
+                self.pc += 4;
+            },
+            Insn::Xoh(n) => {
+                assert_eq!(n & 0xE000_0000, 0);
+                if let XData::I32(n2) = self.x {
+                    self.x = XData::I32(n2 | (n<<3));
+                } else {
+                    return Err(InsnException::WrongType);
+                }
+
+                self.pc += 4;
+            },
             _ => unimplemented!(),
         }
 
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -310,17 +433,27 @@ fn main() {
         Insn::Push(0),
         Insn::Push(1),
         Insn::Val(0),
+        Insn::Xsl(0x1FFF_FFFF),
+        Insn::Xoh(0x1C00_0000),
         Insn::Def(0),
     ].iter().map(|i| i.as_u32()).collect();
 
     let mut m = Machine::new(&prog);
     loop {
+        println!("x = {:?}", m.x);
         m.print_stack();
         println!();
-        if let Err(e) = m.step() {
-            eprintln!("exception: {:?} at #{}", e, friendly_hex_u32(m.pc));
-            break;
+        match m.step() {
+            Ok(Some(x)) => {
+                println!("result: {:?} @ #{}", x, friendly_hex_u32(m.pc));
+                break;
+            },
+            Err(e) => {
+                eprintln!("exception: {:?} @ #{}", e, friendly_hex_u32(m.pc));
+                m.print_stack();
+                break;
+            },
+            _ => (),
         }
     }
-    m.print_stack();
 }
