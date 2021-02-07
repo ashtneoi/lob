@@ -406,8 +406,6 @@ impl Machine {
 
         match insn {
             Insn::Def(id) => {
-                // FIXME
-
                 let id = ItemId(id);
                 if id == ItemId(0) {
                     return Ok(Some(self.x));
@@ -437,7 +435,7 @@ impl Machine {
 
                     self.set_size(new_size);
                 } else {
-                    return Err(InsnException::WrongType);
+                    unimplemented!();
                 }
 
                 self.pc += 4;
