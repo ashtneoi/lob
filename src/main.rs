@@ -308,7 +308,6 @@ impl Machine {
 
         match insn {
             Insn::Def(id) => {
-                assert_eq!(id & 0xE000_0000, 0);
                 let id = ItemId(id);
                 if id == ItemId(0) {
                     return Ok(Some(self.x));
@@ -320,7 +319,6 @@ impl Machine {
                 unimplemented!();
             },
             Insn::Push(id) => {
-                assert_eq!(id & 0xE000_0000, 0);
                 let id = ItemId(id);
                 match self.x {
                     XData::I32(xv) => {
@@ -382,7 +380,6 @@ impl Machine {
                 self.pc += 4;
             },
             Insn::Val(id) => {
-                assert_eq!(id & 0xE000_0000, 0);
                 let id = ItemId(id);
 
                 if id == ItemId(0) {
@@ -408,13 +405,11 @@ impl Machine {
                 self.pc += 4;
             },
             Insn::Xlo(n) => {
-                assert_eq!(n & 0xE000_0000, 0);
                 self.x = XData::I32(n);
 
                 self.pc += 4;
             },
             Insn::Xhi(n) => {
-                assert_eq!(n & 0xE000_0000, 0);
                 if let XData::I32(n2) = self.x {
                     self.x = XData::I32((n2 & 0x1FFF_FFFF) | (n<<29));
                 } else {
