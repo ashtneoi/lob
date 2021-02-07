@@ -44,8 +44,8 @@ pub enum Insn {
     Intr(Intrinsic),
     Jump(u32),
     Val(u32),
-    Xsl(u32),
-    Xoh(u32),
+    Xlo(u32),
+    Xhi(u32),
 }
 
 impl Insn {
@@ -60,8 +60,8 @@ impl Insn {
             3 => Intr(Intrinsic::from_u32(n)),
             4 => Jump(n),
             5 => Val(n),
-            6 => Xsl(n),
-            7 => Xoh(n),
+            6 => Xlo(n),
+            7 => Xhi(n),
             _ => unreachable!(),
         }
     }
@@ -76,8 +76,8 @@ impl Insn {
             Intr(i) => (3<<29) | i.as_u32(),
             Jump(n) => (4<<29) | n,
             Val(n) => (5<<29) | n,
-            Xsl(n) => (6<<29) | n,
-            Xoh(n) => (7<<29) | n,
+            Xlo(n) => (6<<29) | n,
+            Xhi(n) => (7<<29) | n,
         }
     }
 
@@ -90,8 +90,13 @@ impl Insn {
             Intr(i) => i.as_u32(),
             Jump(n) => n,
             Val(n) => n,
-            Xsl(n) => n,
-            Xoh(n) => n,
+            Xlo(n) => n,
+            Xhi(n) => {
+                if n & 0x7 != n {
+                    return Err("xsl immediate doesn't fit in bits 2..0");
+                }
+                n
+            },
         };
         if imm & 0xE000_0000 == 0 {
             Ok(())
@@ -402,16 +407,16 @@ impl Machine {
 
                 self.pc += 4;
             },
-            Insn::Xsl(n) => {
+            Insn::Xlo(n) => {
                 assert_eq!(n & 0xE000_0000, 0);
                 self.x = XData::I32(n);
 
                 self.pc += 4;
             },
-            Insn::Xoh(n) => {
+            Insn::Xhi(n) => {
                 assert_eq!(n & 0xE000_0000, 0);
                 if let XData::I32(n2) = self.x {
-                    self.x = XData::I32(n2 | (n<<3));
+                    self.x = XData::I32((n2 & 0x1FFF_FFFF) | (n<<29));
                 } else {
                     return Err(InsnException::WrongType);
                 }
@@ -433,8 +438,8 @@ fn main() {
         Insn::Push(0),
         Insn::Push(1),
         Insn::Val(0),
-        Insn::Xsl(0x1FFF_FFFF),
-        Insn::Xoh(0x1C00_0000),
+        Insn::Xlo(0x1FFF_FFFF),
+        Insn::Xhi(0x7),
         Insn::Def(0),
     ].iter().map(|i| i.as_u32()).collect();
 
