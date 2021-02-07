@@ -93,7 +93,7 @@ impl Insn {
             Xlo(n) => n,
             Xhi(n) => {
                 if n & 0x7 != n {
-                    return Err("xsl immediate doesn't fit in bits 2..0");
+                    return Err("xhi immediate doesn't fit in bits 2..0");
                 }
                 n
             },
