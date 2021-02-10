@@ -1,4 +1,3 @@
-use core::cmp::max;
 use core::convert::TryInto;
 
 const OBJ_HEADER_SIZE: u32 = 20;
@@ -140,23 +139,23 @@ impl ObjPtr {
         mem.load_u32(self.0 + 16)
     }
 
-    pub fn set_cap(&mut self, mem: &mut Mem, val: u32) {
+    pub fn set_cap(&self, mem: &mut Mem, val: u32) {
         mem.store_u32(self.0 + 0, val);
     }
 
-    pub fn set_size(&mut self, mem: &mut Mem, val: u32) {
+    pub fn set_size(&self, mem: &mut Mem, val: u32) {
         mem.store_u32(self.0 + 4, val);
     }
 
-    pub fn set_base(&mut self, mem: &mut Mem, val: ObjPtr) {
+    pub fn set_base(&self, mem: &mut Mem, val: ObjPtr) {
         mem.store_u32(self.0 + 8, val.0);
     }
 
-    pub fn set_prev(&mut self, mem: &mut Mem, val: ObjPtr) {
+    pub fn set_prev(&self, mem: &mut Mem, val: ObjPtr) {
         mem.store_u32(self.0 + 12, val.0);
     }
 
-    pub fn set_ret(&mut self, mem: &mut Mem, val: u32) {
+    pub fn set_ret(&self, mem: &mut Mem, val: u32) {
         mem.store_u32(self.0 + 16, val);
     }
 }
@@ -323,12 +322,10 @@ impl Machine {
         None
     }
 
-    #[deprecated]
     fn load_u32(&self, addr: u32) -> u32 {
         self.mem.load_u32(addr)
     }
 
-    #[deprecated]
     fn store_u32(&mut self, addr: u32, val: u32) {
         self.mem.store_u32(addr, val)
     }
@@ -337,27 +334,22 @@ impl Machine {
         self.mem.0.len() as u32
     }
 
-    #[deprecated]
     fn cap(&self) -> u32 {
         self.fp.cap(&self.mem)
     }
 
-    #[deprecated]
     fn size(&self) -> u32 {
         self.fp.size(&self.mem)
     }
 
-    #[deprecated]
     fn base(&self) -> ObjPtr {
         self.fp.base(&self.mem)
     }
 
-    #[deprecated]
     fn prev(&self) -> ObjPtr {
         self.fp.prev(&self.mem)
     }
 
-    #[deprecated]
     fn ret(&self) -> u32 {
         self.fp.ret(&self.mem)
     }
@@ -366,28 +358,23 @@ impl Machine {
         self.mem.0.resize(val as usize, 0);
     }
 
-    #[deprecated]
     fn set_cap(&mut self, val: u32) {
         self.fp.set_cap(&mut self.mem, val);
         assert!(self.fp.body_offset(self.cap()) <= self.tos());
     }
 
-    #[deprecated]
     fn set_size(&mut self, val: u32) {
         self.fp.set_size(&mut self.mem, val)
     }
 
-    #[deprecated]
     fn set_base(&mut self, val: ObjPtr) {
         self.fp.set_base(&mut self.mem, val)
     }
 
-    #[deprecated]
     fn set_prev(&mut self, val: ObjPtr) {
         self.fp.set_prev(&mut self.mem, val)
     }
 
-    #[deprecated]
     fn set_ret(&mut self, val: u32) {
         self.fp.set_ret(&mut self.mem, val)
     }
@@ -444,9 +431,7 @@ impl Machine {
                 let id = ItemId(id);
                 match self.x {
                     XData::I32(xv) => {
-                        let cap = self.cap();
-                        let tos = self.tos();
-                        if self.fp.0 + OBJ_HEADER_SIZE + cap != tos {
+                        if self.fp.body_offset(self.cap()) != self.tos() {
                             return Err(InsnException::NotTopFrame);
                         }
                         if xv & 0x3 != 0 {
