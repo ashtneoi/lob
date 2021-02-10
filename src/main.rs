@@ -3,16 +3,16 @@ use core::convert::TryInto;
 const OBJ_HEADER_SIZE: u32 = 20;
 
 #[derive(Clone, Copy, Debug)]
-pub enum Intrinsic {
+pub enum Inherent {
     Call,
     Pop,
     Alloc,
     Unknown(u32),
 }
 
-impl Intrinsic {
-    fn from_u32(n: u32) -> Intrinsic {
-        use Intrinsic::*;
+impl Inherent {
+    fn from_u32(n: u32) -> Inherent {
+        use Inherent::*;
         match n {
             0 => Call,
             1 => Pop,
@@ -22,7 +22,7 @@ impl Intrinsic {
     }
 
     fn as_u32(&self) -> u32 {
-        use Intrinsic::*;
+        use Inherent::*;
         match *self {
             Call => 0,
             Pop => 1,
@@ -40,7 +40,7 @@ pub enum Insn {
     Def(u32),
     Set(u32),
     Push(u32),
-    Intr(Intrinsic),
+    Inh(Inherent),
     Jump(u32),
     Val(u32),
     Xlo(u32),
@@ -56,7 +56,7 @@ impl Insn {
             0 => Def(n),
             1 => Set(n),
             2 => Push(n),
-            3 => Intr(Intrinsic::from_u32(n)),
+            3 => Inh(Inherent::from_u32(n)),
             4 => Jump(n),
             5 => Val(n),
             6 => Xlo(n),
@@ -72,7 +72,7 @@ impl Insn {
             Def(n) => (0<<29) | n,
             Set(n) => (1<<29) | n,
             Push(n) => (2<<29) | n,
-            Intr(i) => (3<<29) | i.as_u32(),
+            Inh(i) => (3<<29) | i.as_u32(),
             Jump(n) => (4<<29) | n,
             Val(n) => (5<<29) | n,
             Xlo(n) => (6<<29) | n,
@@ -86,7 +86,7 @@ impl Insn {
             Def(n) => n,
             Set(n) => n,
             Push(n) => n,
-            Intr(i) => i.as_u32(),
+            Inh(i) => i.as_u32(),
             Jump(n) => n,
             Val(n) => n,
             Xlo(n) => n,
@@ -513,9 +513,9 @@ impl Machine {
 
                 self.pc += 4;
             },
-            Insn::Intr(intr) => {
+            Insn::Inh(intr) => {
                 match intr {
-                    Intrinsic::Pop => {
+                    Inherent::Pop => {
                         match self.fp.ret(&self.mem) {
                             Some(ret) => self.pc = ret,
                             None => self.pc += 4,
@@ -610,9 +610,9 @@ fn main() {
         Insn::Def(4),
         Insn::Xlo(0),
         Insn::Push(0),
-        Insn::Intr(Intrinsic::Pop),
-        Insn::Intr(Intrinsic::Pop),
-        Insn::Intr(Intrinsic::Pop),
+        Insn::Inh(Inherent::Pop),
+        Insn::Inh(Inherent::Pop),
+        Insn::Inh(Inherent::Pop),
 
         Insn::Def(0),
     ].iter().map(|i| i.as_u32()).collect();
