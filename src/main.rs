@@ -127,16 +127,28 @@ impl ObjPtr {
         mem.load_u32(self.0 + 4)
     }
 
-    pub fn base(&self, mem: &Mem) -> ObjPtr {
-        ObjPtr(mem.load_u32(self.0 + 8))
+    pub fn base(&self, mem: &Mem) -> Option<ObjPtr> {
+        let p = mem.load_u32(self.0 + 8);
+        match p {
+            0 => None,
+            _ => Some(ObjPtr(p)),
+        }
     }
 
-    pub fn prev(&self, mem: &Mem) -> ObjPtr {
-        ObjPtr(mem.load_u32(self.0 + 12))
+    pub fn prev(&self, mem: &Mem) -> Option<ObjPtr> {
+        let p = mem.load_u32(self.0 + 12);
+        match p {
+            0 => None,
+            _ => Some(ObjPtr(p)),
+        }
     }
 
-    pub fn ret(&self, mem: &Mem) -> u32 {
-        mem.load_u32(self.0 + 16)
+    pub fn ret(&self, mem: &Mem) -> Option<u32> {
+        let r = mem.load_u32(self.0 + 16);
+        match r {
+            0 => None,
+            _ => Some(r),
+        }
     }
 
     pub fn set_cap(&self, mem: &mut Mem, val: u32) {
@@ -208,6 +220,7 @@ pub enum InsnException {
     ItemNotFound,
     ItemExistsInFrame(ItemPtr),
     FrameFull,
+    StackUnderflow,
 }
 
 fn friendly_hex_u32(x: u32) -> String {
@@ -258,6 +271,7 @@ impl Machine {
             println!("  base = #{}", friendly_hex_u32(self.load_u32(fp + 8)));
             println!("  prev = #{}", friendly_hex_u32(prev));
             println!("  ret  = #{}", friendly_hex_u32(self.load_u32(fp + 16)));
+            self.print_obj(ObjPtr(fp));
             if fp == prev {
                 unreachable!("infinite `prev` loop");
             }
@@ -265,23 +279,29 @@ impl Machine {
         }
     }
 
-    pub fn print_obj(&self, fp: ObjPtr) {
-        let size = fp.size(&self.mem);
-        let mut p = fp.body_offset(0);
-        while p < fp.body_offset(size) {
+    pub fn print_obj(&self, obj: ObjPtr) {
+        // TODO: This should probably belong to ObjPtr, not Machine.
+
+        let size = obj.size(&self.mem);
+        let mut p = obj.body_offset(0);
+        while p < obj.body_offset(size) {
             let (ty, id) = item_header_from_u32(self.load_u32(p));
             // TODO: Don't use id.0 here, just teach it Debug.
-            println!("id #{}: {:?}", friendly_hex_u32(id.0), ty);
+            println!("  id #{}: {:?}", friendly_hex_u32(id.0), ty);
             p += 4 + match ty {
                 Type::BuiltinCode => 4,
                 Type::Code => 4,
                 Type::I32 => 4,
                 Type::Object => {
-                    let cap = self.load_u32(p + 4 + 0);
+                    let subobj = ObjPtr(p + 4);
+                    let cap = subobj.cap(&self.mem);
                     OBJ_HEADER_SIZE + cap
                 },
             };
         }
+        // We can't assert that p == obj.body_offset(size), because frames
+        // (except for the top one) can have a short cap and size if we're in a
+        // frame created via `push "foo"`.
     }
 
     pub fn find_in_frame(&self, fp: ObjPtr, id: ItemId) -> Option<ItemPtr> {
@@ -342,15 +362,15 @@ impl Machine {
         self.fp.size(&self.mem)
     }
 
-    fn base(&self) -> ObjPtr {
+    fn base(&self) -> Option<ObjPtr> {
         self.fp.base(&self.mem)
     }
 
-    fn prev(&self) -> ObjPtr {
+    fn prev(&self) -> Option<ObjPtr> {
         self.fp.prev(&self.mem)
     }
 
-    fn ret(&self) -> u32 {
+    fn ret(&self) -> Option<u32> {
         self.fp.ret(&self.mem)
     }
 
@@ -385,6 +405,20 @@ impl Machine {
         frame_end == self.tos()
     }
 
+    fn ensure_space(&mut self, new_size: u32) -> Result<(), InsnException> {
+        if new_size > self.cap() {
+            if self.is_top_frame() {
+                self.set_tos(self.fp.body_offset(new_size));
+                self.set_cap(new_size);
+                Ok(())
+            } else {
+                Err(InsnException::FrameFull)
+            }
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn step(&mut self) -> Result<Option<XData>, InsnException> {
         let insn_u32 = self.load_u32(self.pc);
         let insn = Insn::from_u32(insn_u32);
@@ -405,15 +439,7 @@ impl Machine {
                     let size_delta = 4 + 4;
                     let new_size = self.size() + size_delta;
 
-                    if new_size > self.cap() {
-                        if self.is_top_frame() {
-                            println!("Expanding top frame");
-                            self.set_tos(self.fp.body_offset(new_size));
-                            self.set_cap(new_size);
-                        } else {
-                            return Err(InsnException::FrameFull);
-                        }
-                    }
+                    self.ensure_space(new_size)?;
                     self.store_u32(
                         self.fp.body_offset(self.size()),
                         item_header_to_u32(Type::I32, id));
@@ -440,37 +466,38 @@ impl Machine {
 
                         if id == ItemId(0) {
                             // Push new frame.
-                            let mem_delta = OBJ_HEADER_SIZE + xv;
-                            let new_fp = ObjPtr(self.fp.0 + mem_delta);
-                            self.set_tos(self.tos() + mem_delta);
+                            let new_fp = ObjPtr(
+                                self.fp.body_offset(self.cap()));
+                            self.set_tos(new_fp.body_offset(xv));
 
-                            let new_prev = self.fp;
+                            new_fp.set_cap(&mut self.mem, xv);
+                            new_fp.set_size(&mut self.mem, 0);
+                            new_fp.set_base(&mut self.mem, self.fp);
+                            new_fp.set_prev(&mut self.mem, self.fp);
+                            new_fp.set_ret(&mut self.mem, 0);
+
                             self.fp = new_fp;
-
-                            self.set_cap(xv);
-                            self.set_base(new_prev);
-                            self.set_prev(new_prev);
                         } else {
                             // Push new named object.
                             let size_delta = 4 + OBJ_HEADER_SIZE + xv;
-                            let size = self.size();
-                            let new_obj =
-                                self.fp.0 + OBJ_HEADER_SIZE + size + 4;
-                            let new_size = size + size_delta;
-                            let new_cap = max(cap, new_size);
-                            let new_tos = self.fp.0 + OBJ_HEADER_SIZE + new_cap;
-                            self.set_tos(new_tos);
+                            let old_size = self.size();
+                            let new_size = old_size + size_delta;
+                            self.ensure_space(new_size)?;
 
-                            self.store_u32(new_obj - 4, item_header_to_u32(
+                            let new_obj_header = self.fp.body_offset(old_size);
+                            let new_obj = ObjPtr(new_obj_header + 4);
+
+                            self.store_u32(new_obj_header, item_header_to_u32(
                                 Type::Object, id));
-                            self.store_u32(new_obj + 0, xv); // cap
-                            self.store_u32(new_obj + 8, self.fp.0); // base
-                            self.store_u32(new_obj + 12, self.fp.0); // prev
+                            new_obj.set_cap(&mut self.mem, xv);
+                            new_obj.set_size(&mut self.mem, 0);
+                            new_obj.set_base(&mut self.mem, self.fp);
+                            new_obj.set_prev(&mut self.mem, self.fp);
+                            new_obj.set_ret(&mut self.mem, 0);
 
-                            self.store_u32(self.fp.0 + 0, new_cap);
-                            self.store_u32(self.fp.0 + 4, new_size);
+                            self.set_size(new_size);
 
-                            self.fp = ObjPtr(new_obj);
+                            self.fp = new_obj;
                         }
                     },
                     XData::Object(ObjPtr(_p)) => {
@@ -485,6 +512,37 @@ impl Machine {
                 }
 
                 self.pc += 4;
+            },
+            Insn::Intr(intr) => {
+                match intr {
+                    Intrinsic::Pop => {
+                        match self.fp.ret(&self.mem) {
+                            Some(ret) => self.pc = ret,
+                            None => self.pc += 4,
+                        }
+
+                        let old_fp = self.fp;
+                        if let Some(new_fp) = self.prev() {
+                            self.fp = new_fp;
+                            let end = self.fp.body_offset(self.size());
+                            if end >= old_fp.body_offset(0) {
+                                assert_eq!(end, old_fp.body_offset(0));
+                                // old_fp is a member of self.fp, so we have to
+                                // expand self.fp so it'll fit.
+                                let inner_end =
+                                    old_fp.body_offset(old_fp.size(&self.mem));
+                                let new_size =
+                                    inner_end - self.fp.body_offset(0);
+                                self.set_cap(new_size);
+                                self.set_size(new_size);
+                            }
+                            self.set_tos(self.fp.body_offset(self.cap()));
+                        } else {
+                            return Err(InsnException::StackUnderflow);
+                        }
+                    },
+                    _ => unimplemented!(),
+                }
             },
             Insn::Val(id) => {
                 let id = ItemId(id);
@@ -539,12 +597,23 @@ fn main() {
     // bytecode.
 
     let prog: Vec<_> = [
+        Insn::Val(0),
+
+        Insn::Xlo(0),
         Insn::Push(0),
         Insn::Push(1),
-        Insn::Val(0),
         Insn::Xlo(0x1FFF_FFFF),
         Insn::Xhi(0x7),
-        Insn::Def(88),
+        Insn::Def(1),
+        Insn::Def(2),
+        Insn::Def(3),
+        Insn::Def(4),
+        Insn::Xlo(0),
+        Insn::Push(0),
+        Insn::Intr(Intrinsic::Pop),
+        Insn::Intr(Intrinsic::Pop),
+        Insn::Intr(Intrinsic::Pop),
+
         Insn::Def(0),
     ].iter().map(|i| i.as_u32()).collect();
 
@@ -552,8 +621,8 @@ fn main() {
     loop {
         println!("x = {:?}", m.x);
         m.print_stack();
-        println!("active frame:");
-        m.print_obj(m.fp);
+        println!();
+        println!("---");
         println!();
         match m.step() {
             Ok(Some(x)) => {
